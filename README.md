@@ -11,7 +11,7 @@ Collection of machine learning projects in R, including data preprocessing, mode
 
 3. Transportation Mode Prediction using Gradient Boosting
    
-   This project predicts whether individuals choose public transport or private car for their daily commute using ensemble machine learning techniques on a dataset of 5,896 observations. The primary model implemented is Gradient Boosting (GBM) with 10-fold cross-validation for hyperparameter tuning, while AdaBoost and XGBoost were also tested for comparison. Model performance was evaluated using a confusion matrix and accuracy (~79%), and feature importance analysis revealed that time-related variables—especially the ratio between public transport and car travel time—are the most influential factors in transportation mode decisions.
+   This project predicts whether individuals choose public transport or private car for their daily commute using ensemble machine learning techniques on a dataset of 5,896 observations. The primary model implemented is Gradient Boosting (GBM) with 10-fold cross-validation for hyperparameter tuning, while AdaBoost and XGBoost were also tested for comparison. Model performance was evaluated using a confusion matrix and accuracy (~79%), and feature importance analysis revealed that time-related variables, especially the ratio between public transport and car travel time are the most influential factors in transportation mode decisions.
 
 4. Semantic Word Maps via Multidimensional Scaling
 
