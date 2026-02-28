@@ -1,0 +1,151 @@
+---
+title: "2D-3D visualizations using MDS"
+author: "Lefteris"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+# load packages
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("wordcloud")) install.packages("wordcloud")
+if (!require("tidytext")) install.packages("tidytext")
+if (!require("smacof")) install.packages("smacof")
+if (!require("ggrepel")) install.packages("ggrepel")
+if (!require("ggfortify")) install.packages("ggfortify")
+if (!require("ggthemes")) install.packages("ggthemes")
+if (!require("tm")) install.packages("tm")
+if (!require("quanteda")) install.packages("quanteda")
+```
+
+```{r, include=FALSE}
+# Standard setups as recommended in Kwartler
+options(stringsAsFactors=F)
+Sys.setlocale('LC_ALL','C')
+
+#Some algorithms contain random components. It is always good when coding to be able to replicate what you do. To achieve this, we fix what is called the seed of the random number generator. Please see the difference for different seeds
+set.seed(1223)
+
+```
+
+
+```{r}
+#load data
+load("C:/Users/24493ado/surfdrive/text-analytics/IntroLecture/R-files/fully_cleaned_reviews.Rdata")
+
+```
+
+```{r}
+#delete duplicate IDs
+
+duplicate_ids <- data_stemmed[duplicated(data_stemmed$review_id), "review_id"]
+
+# If there are duplicates, remove them from data_stemmed
+if (length(duplicate_ids) > 0) {
+  print(paste("Duplicate review_ids found:", paste(duplicate_ids, collapse = ", ")))
+  
+  # Remove rows with duplicate review_ids
+  data_stemmed <- data_stemmed[!duplicated(data_stemmed$review_id), ]
+}
+```
+
+```{r}
+reviews_corp <- corpus(data_stemmed, docid_field = "review_id", text_field = "review")
+```
+
+```{r}
+
+#tokenization
+
+# Tokenize the corpus
+tokens_corpus <- tokens(reviews_corp)
+
+# Create a document-feature matrix (DFM) from the tokenized data
+dfm_corpus <- dfm(tokens_corpus)
+
+# Compute the feature co-occurrence matrix (FCM) from the DFM
+co_occurrence_matrix <- fcm(dfm_corpus, context = "document", count = "frequency", tri = FALSE)
+
+
+```
+
+```{r}
+
+#Need number of documents with each word on the diagonal
+reviews_dfm <- dfm(reviews_corp) # get document frequency matrix
+counts <- colSums(as.matrix(reviews_dfm)) 
+co_occurrence_matrix <- as.matrix(co_occurrence_matrix)
+diag(co_occurrence_matrix) <- counts
+
+
+
+sortedcount <- counts%>% sort(decreasing=TRUE)
+sortednames <- names(sortedcount)
+nwords<-100
+subset_words<-as.matrix(sortedcount[1:nwords])
+
+```
+
+```{r}
+co_occurrence_matrix <- co_occurrence_matrix[sortednames[1:nwords],sortednames[1:nwords]]
+co_occurrence_matrix[1:15,1:15]
+```
+
+```{r}
+distances <- sim2diss(co_occurrence_matrix, method = "cooccurrence") # Transform similarities to distances.
+distances[1:15,1:15]
+```
+
+```{r}
+MDS_map <- smacofSym(distances) # run the routine that finds the best matching coordinates in a 2D mp given the distances
+
+ggplot(as.data.frame(MDS_map$conf), aes(D1, D2, label = rownames(MDS_map$conf))) +
+     geom_text(check_overlap = TRUE) + theme_minimal(base_size = 15) + xlab('') + ylab('') +
+     scale_y_continuous(breaks = NULL) + scale_x_continuous(breaks = NULL)
+# the conf element in the MDS output contains the coordinatis with as names D1 and D2.
+
+```
+
+
+```{r}
+library(ggplot2)
+
+# Assuming MDS_map$conf contains the MDS coordinates for D1 and D2 only
+conf_df <- as.data.frame(MDS_map$conf)
+conf_df$names <- rownames(MDS_map$conf)
+
+# Create a 2D scatter plot with only text labels
+ggplot(conf_df, aes(x = D1, y = D2, label = names)) +
+  geom_text(size = 4, color = "black") +  # Adjust text size and color
+  theme_minimal(base_size = 14) +  # Set minimal theme with a smaller base font size
+  labs(x = 'Dimension 1', y = 'Dimension 2', title = '2D Scatter Plot with Labels') +  # Add axis labels and plot title
+  theme(plot.title = element_text(size = 18, face = "bold"),  # Customize plot title appearance
+        axis.text = element_text(size = 12),  # Adjust axis text size
+        axis.title = element_text(size = 14, face = "bold"))  # Adjust axis title size and appearance
+
+```
+
+
+
+```{r}
+conf_df <- as.data.frame(MDS_map$conf)
+conf_df$names <- rownames(MDS_map$conf)
+
+# Add a constant value for the third dimension (z-coordinate)
+conf_df$D3 <- 0  # You can adjust this value if needed
+
+# Create a 3D-like scatter plot using plotly with labels (only words, no dots)
+plot_ly(data = conf_df, x = ~D1, y = ~D2, z = ~D3, text = ~names) %>%
+  add_text(text = ~names, textfont = list(size = 12, color = 'black'), mode = 'text', showlegend = FALSE) %>%
+  layout(scene = list(xaxis = list(title = 'Dimension 1'),
+                      yaxis = list(title = 'Dimension 2'),
+                      zaxis = list(title = 'Dimension 3')),
+         margin = list(l = 0, r = 0, b = 0, t = 30),  # Adjust margin for better layout
+         title = '3D Scatter Plot with Labels (Only Words)',
+         showlegend = FALSE)  
+
+```
+
+
+
