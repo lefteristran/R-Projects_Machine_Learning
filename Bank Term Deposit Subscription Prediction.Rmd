@@ -1,0 +1,681 @@
+---
+title: "FEM11152 – Seminar Data Science for Marketing Analytics: Individual Assignment"
+author: "Eleftherios Tranakos - EBB5 Team 5"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: pdflatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Full Code, error=TRUE, message=FALSE, warning=FALSE, include=FALSE}
+#read dataset
+data <- read.csv("C:/Users/lefte/Desktop/Courses/bank.csv", sep=";")
+#install libraries
+if (!require(ggplot2)) install.packages("ggplot2")
+if (!require(gridExtra)) install.packages("gridExtra")
+if (!require(caTools)) install.packages("caTools")
+if (!require(dplyr)) install.packages("dplyr")
+if (!require(ModelMetrics)) install.packages("ModelMetrics")
+if (!require(car)) install.packages("car")
+if (!require(reshape2)) install.packages("reshape2")
+if (!require(glmnet)) install.packages("glmnet")
+if (!require(ROSE)) install.packages("ROSE")
+if (!require(caret)) install.packages("caret")
+if (!require(e1071)) install.packages("e1071")
+if (!require(rpart)) install.packages("rpart")
+if (!require(randomForest)) install.packages("randomForest")
+if (!require(lightgbm)) install.packages("lightgbm")
+if (!require(Matrix)) install.packages("Matrix")
+if (!require(rpart.plot)) install.packages("rpart.plot")
+if (!require(knitr)) install.packages("knitr")
+
+## Exloratory Data Analysis ##
+#search for NAs
+colSums(is.na(data))
+
+#convert response variable yes - no to 1-0
+data[] <- lapply(data, function(x) ifelse(x == "yes", 1, ifelse(x == "no", 0, x)))
+data$y<-as.factor(data$y)
+
+data[data=="unknown"]<-NA 
+#deleting the rows with NAs in these columns
+data<-data[complete.cases(data$job),]
+data<-data[complete.cases(data$marital),]
+data<-data[complete.cases(data$education),]
+data<-data[complete.cases(data$housing),]
+data<-data[complete.cases(data$loan),]
+colSums(is.na(data)) #default 7757 NAs-unknown - 3 obs yes the rest no / not a lot of info
+#will apply glm to compare the mse with and without "default" - "pdays" variable
+
+#explore numeric var - histogram
+
+numeric <- data %>% select_if(is.numeric)
+
+#Histograms for Numeric Variables
+histogram <- function(dataf) {
+  for (i in names(dataf)) {
+    print(ggplot(dataf, aes_string(x = i)) + geom_histogram(bins = 30) + ggtitle(paste("Histogram of", i)))
+  }
+}
+
+histogram(numeric)
+
+# convert categorical variables into factors
+data[] <- lapply(data, function(x) if(is.character(x)) as.factor(x) else x)
+
+# Selecting only categorical variables
+categorical <- data %>% select_if(is.factor)
+
+# Bar Plots for Categorical Variables
+barplot_categorical <- function(dataf) {
+  for (i in names(dataf)) {
+    print(ggplot(dataf, aes_string(x = i)) + geom_bar() + ggtitle(paste("Bar Plot of", i)))
+  }
+}
+
+barplot_categorical(categorical)
+
+#time to check and fix the imbalance in our dataset 
+response_variable <- data$y
+
+# Calculate the class distribution
+y_distribution <- table(response_variable)
+
+ggplot(data = data.frame(Class = names(y_distribution), Frequency = as.vector(y_distribution)), aes(x = Class, y = Frequency)) +
+  geom_bar(stat = "identity", aes(fill = Class), color = "black") +
+  scale_fill_manual(values = c("purple", "black")) +  # Set custom colors
+  labs(title = "Class Distribution of Response Variable",
+       x = "Class",
+       y = "Frequency")
+
+#glm for default  / pdays variable - in this case we assign again the unknown category to default variable\
+data$default<-as.character(data$default)
+
+data$default[is.na(data$default)] <- "Unknown"
+data$default<-as.factor(data$default)
+#preparing the dataset for glm
+
+#scale numeric variables
+numeric <- scale(numeric)
+numeric<-data.frame(numeric)
+#encode the categorical variables
+encoded_data <- dummyVars(~ . - y, data = data)
+encoded_data <- data.frame(predict(encoded_data, newdata = data))
+
+ready_dataset<-cbind(numeric,encoded_data)
+
+ready_dataset[11]<-NULL #DELETE duplicate age variable
+ready_dataset <- ready_dataset[!duplicated(names(ready_dataset))]
+
+
+# 38k obs => 34k | 0 + 4k | 1
+#oversampling the minority with SMOTE - undersample the majority
+ready_dataset$y<-data$y
+ready_dataset$y <- as.factor(ready_dataset$y)
+
+#We apply glm to drop out some variables but first we balance the dataset "ready_dataset"
+#in which the data are scaled and encoded
+
+#Splitting the data into train-test data
+set.seed(555)  # set a seed
+indexes <- sample(1:nrow(ready_dataset), size = 0.8 * nrow(ready_dataset))
+train_glm <- ready_dataset[indexes, ]
+test_glm <- ready_dataset[-indexes, ]
+
+minority_size_glm <- sum(train_glm$y == "yes")
+desired_size_glm <- nrow(train_glm) + minority_size_glm
+
+#ROSE package / undersampling - oversampling
+train_glm_smote <- ovun.sample(y ~ ., data = train_glm, method = "both", N = desired_size_glm)$data 
+
+table(train_glm_smote$y) #around 30k
+table(test_glm$y) #around 8k
+
+#applying logistic regression to see if 'default" - "pdays" variable changes the mse
+#including 'default' variable
+model <- glm(y ~ ., data = train_glm_smote, family = binomial)
+
+# Excluding 'default' variable
+model_without_default <- glm(y ~ . - default.0 - default.1 -default.Unknown, data = train_glm_smote, family = binomial)
+
+#Predict and calculate MSE
+#Including 'default'
+test_glm$y <- as.numeric(test_glm$y)
+
+predictions <- predict(model, test_glm, type = "response")
+mse <- mean((test_glm$y - predictions) ^ 2)
+
+# Excluding 'default'
+predictions_without_default<- predict(model_without_default, test_glm, type = "response")
+mse_without_default <- mean((test_glm$y - predictions_without_default) ^ 2)
+
+# Compare MSE
+mse # 0.8093
+mse_without_default #0.8087
+
+
+## same way for pdays ##
+
+model_without_pdays <- glm(y ~ . - pdays, data = train_glm, family = binomial)
+
+#exclude 'pdays'
+predictions_without_pdays<- predict(model_without_pdays, test_glm, type = "response")
+mse_without_pdays <- mean((test_glm$y - predictions_without_pdays) ^ 2)
+
+mse # 0.8093
+mse_without_pdays #1.060227 #we cannot exclude it, we keep it in
+
+#since default does not change a lot the mse - we drop it out
+
+ready_dataset[,c("default.0","default.1","default.Unknown")]<-NULL
+
+#we will exclude the variable default from the original dataset "data" 
+
+data[,5]<-NULL #data 19 +1 var
+
+
+#check correlation
+cor_matrix <- cor(numeric)
+
+#correlation matrix for visualization
+melted_cor_matrix <- melt(cor_matrix)
+
+#plot the correlation matrix plot
+corr_matric<-ggplot(data = melted_cor_matrix, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "black", high = "purple", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1),
+        axis.text.y = element_text(size = 12)) +
+  coord_fixed() +
+  labs(x = '', y = '', title = 'Correlation matrix of numeric variables')
+
+
+#the social-economic indicators show high correlation
+## Lassoo - variable selection - drop##
+
+X <- as.matrix(numeric)
+y <- data$y
+
+#Lasso model with 10-fold cross-validation
+cv_lasso <- cv.glmnet(X, y, alpha = 1, family = "binomial", nfolds = 10)
+
+#Best lambda value
+best_lambda <- cv_lasso$lambda.min
+
+#Lasso model with the best lambda
+best_lasso_model <- glmnet(X, y, alpha = 1, lambda = best_lambda, family = "binomial")
+
+#Inspecting the coefficients
+#Non-zero coefficients are the predictors that were not "kicked out"
+coefficients <- coef(best_lasso_model, s = best_lambda)
+non_zero_coefficients <- coefficients[coefficients != 0] #euribor3m kicked out
+
+# Print the non-zero coefficients
+print(non_zero_coefficients)
+
+#euribor3m = 0 , we drop this variable for "data" dataset 
+
+data[,18]<-NULL   #cleaned dataset / remained 18+1 #we are ready to proceed to methods
+
+#After we scaled/encoded the ready_dataset and balanced it to see which variables can be dropped
+#we balance the original dataset "data"
+set.seed(555) #set seed
+indexes_methods <- sample(1:nrow(data), size = 0.8 * nrow(data))
+train_methods <- data[indexes_methods, ]
+test_methods <- data[-indexes_methods, ]
+
+minority_size <- sum(train_methods$y == "yes")
+desired_size_methods <- nrow(train_methods) + minority_size
+
+#Applying over-undersampling to the training data using ROSE package
+train_methods_smote <- ovun.sample(y ~ ., data = train_methods, method = "both", N = desired_size_methods)$data
+table(train_methods_smote$y)
+table(test_methods$y)
+
+############### boosting ###############
+##boosting -lightboosting
+
+train_data_encoded <- model.matrix(~ . - 1 -y, data = train_methods_smote)
+test_data_encoded <- model.matrix(~ . - 1 - y, data = test_methods)
+str(train_data_encoded)
+train_data_encoded<-data.frame(train_data_encoded)
+test_data_encoded<-data.frame(test_data_encoded)
+str(test_data_encoded)
+
+test_data_encoded$y<-test_methods$y
+train_data_encoded$y<-train_methods_smote$y
+
+
+#Create a model matrix for LightGBM
+train_matrix <- sparse.model.matrix(y ~ . - 1, data = train_data_encoded)
+test_matrix <- sparse.model.matrix(y ~ . - 1, data = test_data_encoded)
+
+
+#Create a LightGBM dataset
+set.seed(555)
+train_data_lgb <- lgb.Dataset(train_matrix, label = as.numeric(train_data_encoded$y) - 1)
+
+#Define parameters for LightGBM
+params <- list(
+  objective = "binary",
+  metric = "binary_error",
+  boosting_type = "gbdt",
+  num_leaves = 20,
+  learning_rate = 0.05
+)
+
+#Train the LightGBM model
+lgb_model <- lgb.train(params, train_data_lgb, 1000)
+
+#Make predictions on the test set
+predictions_lgb <- predict(lgb_model, test_matrix, num_iteration = lgb_model$niter)
+
+#Convert predicted probabilities to binary class labels
+predicted_classes <- ifelse(predictions_lgb > 0.5, "Yes", "No")
+
+#Create the confusion matrix
+confusion_matrix_lgb <- table(predicted_classes, test_data_encoded$y)
+
+accuracy_lgb <- sum(diag(confusion_matrix_lgb)) / sum(confusion_matrix_lgb)
+
+
+sensitivity_lgb <- round(confusion_matrix_lgb[2, 2] / sum(confusion_matrix_lgb[, 2]),3)
+
+specificity_lgb <- round(confusion_matrix_lgb[1, 1] / sum(confusion_matrix_lgb[, 1]),3)
+#Calculate Cohen's Kappa
+expected_accuracy_lgb <- sum(rowSums(confusion_matrix_lgb) * colSums(confusion_matrix_lgb)) /sum(confusion_matrix_lgb)^2
+kappa_lgb <- round((accuracy_lgb - expected_accuracy_lgb) / (1 - expected_accuracy_lgb),3)
+#balanced accuracy
+balanced_accuracy_lgb <- round((sensitivity_lgb + specificity_lgb) / 2,3) #0,87
+
+#confusion matrix
+print(confusion_matrix_lgb)
+#plotting the 10 most important features
+importance_lgb <- lgb.importance(lgb_model)
+
+importance_plot <- lgb.plot.importance(importance_lgb, top_n = 10, measure = "Gain")
+
+################### CART ##########################
+#CART
+set.seed(555)
+
+cart_grid <- expand.grid(cp = seq(0.001, 0.1, by = 0.001))
+
+#Create a train control object for cross-validation
+cart_control <- trainControl(method = "cv", number = 10)
+
+#Tune the CART model using cross-validation
+tuned_cart <- train(y ~ ., data = train_data_encoded, method = "rpart",
+                    trControl = cart_control,
+                    tuneGrid = cart_grid)
+
+#Print the best parameter
+print(tuned_cart)
+
+#join the best model
+best_cart_model <- tuned_cart$finalModel
+
+#predictions on the test set
+predictions_cart <- predict(best_cart_model, newdata = test_data_encoded, type = "class")
+
+
+#Create the confusion matrix
+confusion_matrix_cart <- table(predictions_cart, test_methods$y)
+
+# alculate accuracy
+accuracy_cart <- sum(diag(confusion_matrix_cart)) / sum(confusion_matrix_cart)
+
+sensitivity_cart <- round(confusion_matrix_cart[2, 2] / sum(confusion_matrix_cart[, 2]),3)
+specificity_cart <- round(confusion_matrix_cart[1, 1] / sum(confusion_matrix_cart[, 1]),3)
+#Calculate Cohens Kappa
+expected_accuracy_cart <- sum(rowSums(confusion_matrix_cart) * colSums(confusion_matrix_cart))/sum(confusion_matrix_cart)^2
+kappa_cart <- round((accuracy_cart - expected_accuracy_cart) / (1 - expected_accuracy_cart),3)
+#Calculate balanced accuracy
+balanced_accuracy_cart <- round((sensitivity_cart + specificity_cart) / 2,3) #0.881
+
+#Print the confusion matrix
+print(confusion_matrix_cart)
+tree_cart<- prp(best_cart_model, type = 2, extra = 1)
+
+#Calculate variable importance 
+cart_importance <- varImp(tuned_cart$finalModel)
+
+#Create a data frame of the variable importance
+cart_importance_df <- as.data.frame(cart_importance)
+cart_importance_df$Variable <- rownames(cart_importance_df)
+cart_importance_df_sorted <- cart_importance_df[order(cart_importance_df$Overall, decreasing = TRUE), ]
+
+#Select the top 10 features
+top10_cart_importance <- head(cart_importance_df_sorted, 10)
+
+top10_cart_importance$Percentage <- (top10_cart_importance$Overall / sum(top10_cart_importance$Overall)) * 100
+
+#Now, plot the percentages using ggplot2
+cart_var_impp<-ggplot(top10_cart_importance, aes(x = reorder(Variable, Percentage), y = Percentage)) +
+  geom_bar(stat = "identity", fill = "purple") +  # Set bar color to purple
+  coord_flip() + 
+  labs(title = "Top 10 Important Features in CART Model", x = "Features", y = "Importance (%)")
+
+######################## Random Forest #####################
+
+#Train the Random Forest model
+set.seed(555)
+
+rf_model <- randomForest(y ~ ., 
+                         data = train_data_encoded, 
+                         ntree = 500, 
+                         mtry = floor(sqrt(ncol(train_data_encoded))), 
+                         nodesize = 5,
+                         importance = TRUE, 
+                         replace = TRUE)
+
+#Predict on test data
+rf_predictions <- predict(rf_model, newdata = test_data_encoded)
+confusion_matrix_rf <- table(rf_predictions, test_data_encoded$y)
+
+accuracy_rf <- sum(diag(confusion_matrix_rf)) / sum(confusion_matrix_rf)
+
+#Calculate sensitivity 
+sensitivity_rf <- round(confusion_matrix_rf["1", "1"] / sum(confusion_matrix_rf["1", ]),3)
+
+#Calculate specificity 
+specificity_rf <- round(confusion_matrix_rf["0", "0"] / sum(confusion_matrix_rf["0", ]),3)
+
+#Calculate Cohen's Kappa
+expected_accuracy_rf <- sum(rowSums(confusion_matrix_rf) * colSums(confusion_matrix_rf)) / sum(confusion_matrix_rf)^2
+kappa_rf <- round((accuracy_rf - expected_accuracy_rf) / (1 - expected_accuracy_rf),3)
+#Calculate balanced accuracy
+balanced_accuracy_rf <- round((sensitivity_rf + specificity_rf) / 2,3)  ##0,72
+
+# Print the confusion matrix 
+print(confusion_matrix_rf)
+
+#data frame with the metrics
+model_performance <- data.frame(
+  Model = c("LightGBM", "CART", "Random Forest"),
+  Sensitivity = c(sensitivity_lgb, sensitivity_cart, sensitivity_rf),
+  Specificity = c(specificity_lgb, specificity_cart, specificity_rf),
+  Kappa = c(kappa_lgb, kappa_cart, kappa_rf),
+  Balanced_Accuracy = c(balanced_accuracy_lgb, balanced_accuracy_cart, balanced_accuracy_rf)
+)
+
+#creating the table for confusion matrix
+confusion_matrix_cart_df <- as.data.frame.matrix(confusion_matrix_cart)
+
+#using kable for the table :p
+kable_styled <- knitr::kable(confusion_matrix_cart_df, caption = "Confusion Matrix for CART Model") %>%
+  kableExtra::kable_styling(full_width = FALSE, position = "center") %>%
+  kableExtra::row_spec(0, bold = TRUE, background = "purple", color = "black") %>%
+  kableExtra::column_spec(1, background = "purple", color = "black")
+
+```
+
+
+
+## *Introduction*
+
+The purpose of this report is to forecast the success of Portuguese bank's telemarketing to its customers on whether they will open a term deposit after their last contact or not. The significance of this analysis for a bank is to understand which features of the telemarketing campaign lead to deposits, which features need to change in order to have the optimal result of a deposit and lastly to predict the amount of money that they expect to get after a term of a campaign. Thus, the research question that is being generated is the following:
+
+Is telemarketing campaign successful for a bank term deposit and  which factors influence the optimal outcome, as mentioned by the probability of a customer to open a deposit after the last phone contact?
+
+## *Data Preparation*
+
+In this report, the data was formulated from May 2008 - November 2010 from a Portuguese Bank institution and donated on 2/13/2012 for public research. It was published also by Sérgio Moro, P. Cortez, P. Rita. in 2014 in Decision Support Systems. The dataset is consisted of 41.188 observations and 21 variables included the response variable. Also, the research was conducted via phone calls on the weekdays in Portugal.
+
+Describing the variables we have, both numeric and categorical, they are classified as demographic (ex.age,marital,education,loan), social-economic indicators(ex.cons.price.idx,euribor3m) and lastly are related with the last contact of the current campaign. More specifically, social-economic indicators, such as ex.cons.price.idx, which describes the inflation rate or changes in consumer prices, are related with external factors that possibly influence a client to open a bank deposit based on the financial power that person has by that time. In addition, the attributes of the last contact are represented by features such as the duration of the phone call, the frequency and the day of the contact.
+
+Heading now to how we prepared our data for the analysis, we noticed that despite our data do not have NAs values, they have some ''unknown'' values that could be treated as NAs as the actual value of these variables should be binary (yes-no). Thus, we converted the ''unknown'' values into NAs and we deleted the rows of it since they were not too many. So, our observations decreased from 41.188 to 38.245. However, there was a specific variable "default" which had 8.000 NAs and we treated it differently. Dropping it out, would cause to lose a lot of information and for that reason we applied logistic regression with and without it in order to compare the mse and see how much it influencs our predictions. Before applying this method, we scaled the numeric data and encoded the categorical ones with one hot encoding method. After applying the function glm(), the difference between the two mse's was small, 0,006, so we decided to delete this variable from our dataset remaining now with 20 variables.
+
+Exploring a bit more the numeric variables and plotting the correlation matrix, we noticed that there is a high correlation between the social-economic indicators. Despite the fact that the mothods we chose for our analysis could potentially handle the correlated variables but in order to make our models more robust, we decided to proceed with lasso penalized regression model for variable selection. After the application of lasso, the 'euribor3m' economic indicator was selected for deletion. Thus, we remained with 19 variables and 38.245 observations.
+
+Lastly, we realized that our dataset has a significant class imbalance for our response variable leading us to apply techniques from ROSE package in order to create synthetically data and oversample the minority and undersample the majority simultaneously. We proceed to this step after we had split the data into train - test, with 80-20%, respectively. Therefore, we applied the method on the train data consisting of almost 30.000 variables.
+
+## *Methods*
+
+In our analysis, we applied a variety of methods either to reduce the dimensionality of our data or in order to compare the different predictions and find the most optimal model for our data.
+
+We firstly applied, **Logistic Regression** which is a statistical technique that can be used for classification tasks. We chose to use it as it can both handle numeric and categorical variables (our data) and can predict the response categorical variable(yes-no). Its application, helped us realized that "default" variable does not change the predictions (based on mse) in a great extend and for that reason was deleted.
+
+$$P(Y=1) = \frac{1}{1 + e^{-(\beta_0 + \beta_1 x_1 + \beta_2 x_2 + \ldots + \beta_p x_p)}}$$ 
+
+Secondly, we proceeded with **Lassoo** penalized regression model in order to address high multicollinearity, automatically dropping out highly correlated variables such as "euribor3m" in our case. It does this by setting some coefficients $\beta$ to exactly zero, effectively removing those variables from the model.
+
+The penalty parameter, $\lambda$, defines the weight of the penalty on each coefficient and  can be found via recurrent cross-validation, in which the training dataset is divide into n folds, in the model trained on n-1 folds and tested on the remaining one fold n times for each fold, for each $lambda$.
+
+We take the $\lambda$ average accuracy metric (mse) for each n trials.
+The model is trained with parameter $\lambda$ = $\lambda_{\text{min}}$ to extract an optimal model, and the one with lowest mse is chosen ($\lambda_{\text{min}}$).
+
+$$min( \sum_{i=1}^{n}(Y_i - \hat{Y}_i)^2 + \lambda\sum_{i=1}^{n}|\beta_i|)$$
+
+Heading now to our main methods, we started with **Boosting** which is an ensemble machine learning technique used to improve prediction's accuracy by training the weak learners(decision trees) in order to correct the errors of the previous models. The main purpose is to work more on the instances that were misclassified. We chose to use this method as it is well-known for its robustness, it is less prone to overfit, handle complex relationships and generalize quite well to unseen data.
+
+Boosting includes repeatedly adding models, $f_t(x)$, to minimize the loss function, $L(y, F(x))$, where $y$ is the real value and $F(x)$ is the prediction. 
+
+$$ F_{t}(x) = F_{t-1}(x) + \alpha_t f_t(x) $$
+
+Here, $F_{t-1}(x)$ is the ensemble model at repetition $t-1$, $f_t(x)$ is the new model added at iteration $t$, and $\alpha_t$ is the learning rate. The procedure is repeated in order to improve  $F(x)$, the final predictive model.
+
+
+Continuing with **Classification and Regression Trees(CART)** in our methods, it is a supervised machine learning models used for classification and regression. The algorithm constructs binary trees by dividing the train data into subsets based on an attribute value test. These steps are repeated continuously on each built subset. When the algorithm understand that no further splits can originate more homogeneous subsets, the repetition is finished. In our case we made use of this method for classification purposes and it tends to maximize the purity of each node, using measures like Gini impurity: 
+
+$$ Gini(t) = 1 - \sum_{i=1}^{c} p_i^2 $$
+
+Gini impurity quantifies the likelihood of misclassifying a random instance from a labeled subset based on the majority class. Lower Gini impurity indicates greater purity of the subset.
+
+We chose to use it as CART can be interpreted relatively easy, is versatile and can handle mixed data types as we have in our case.
+
+
+Completing the methods part, the last method we used is **Random Forest** which is an ensemble machine learning model used for classification and regression tasks. It is a specific type of bagging( Aggregate Boosting) that decreases overfitting by introducing randomness as we construct the tree.
+
+It choose randomly subsets of variables at each split and combine the predictions of many decision trees in order to improve the accuracy and decrease the variance.
+
+$$ RF(x) = \text{mode}\{ T_1(x), T_2(x), \ldots, T_B(x) \} $$
+
+We decided to use this method as it is robust against overfitting,  can handle large datasets with high dimensionality(as in our case) and often leads to high accuracy.
+
+
+## *Analysis*
+
+Heading now to the analysis part, before we explain the results from the methods and the best one, we will dive a bit into the **exploratory analysis** of our data.
+
+Taking a look on the numeric variables first and more precisely on the plot below, we can extract information about our client's age which is between 17 and 98 years old with the mean to be 40 years old. The higher concentration of the client's age is gathered between 30 and 40 years old.
+
+On the next plot, we can explore the duration of the last call in seconds that the bank's employers had with their customers. As we can see the range is from 0 to 4918 seconds and an average call last around 258 seconds. Converting into minutes, a call usually last maximum 4.3 minutes with a regular call to be around 1.2 minutes. This can be explained from the feature's display which its distribution is right-skewed distribution, indicating that most calls are relatively short.
+
+
+```{r echo=FALSE, error=TRUE, fig.height=3, fig.width=3, message=FALSE, warning=FALSE}
+#plot for age
+ggplot(data, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = 'purple', color = 'white') +
+  theme_minimal() +
+  labs(title = 'Distribution of Age', x = 'Customers Age', y = 'Frequency')
+#plot for call's duration
+ggplot(data, aes(x = duration)) +
+  geom_histogram(binwidth = 10, fill = 'purple', color = 'pink') +
+  theme_minimal() +
+  labs(title = 'Distribution of Duration', x = 'Duration in seconds', y = 'Frequency')
+
+```
+
+Heading further, it is time to have a short look on some social-economic indicators by the time that the research was conducted. Starting with "cons.price.inx" which is a consumer price index(CPI), measure of inflation and economic health. Changes in CPI influence people's financial power  and decisions including term deposits. When CPI is high the real value of money fall which may encourage customers to open a term deposit, and proceed to investment moves and vice verca. From the bank's aspects, they often adjust their interest rates based on CPI. In our case, the range of CPI is from 92.201 to 94.767 with an average to be around 93.576. The distribution of this index represents many peaks, possibly indicating specific periods where the index value was more popular.
+
+Respectively, the next graph which represents the "cons.conf.idx", consumer confidence index(CCI), is an index which measures the consumer's confidence about their financial situation and the state's economy. A higher CCI reveals, that consumers are optimist and vice verca. This situation, may lead consumers to consume more but it also may lead to invest/save money for future use, as in bank deposits. In this case, the range of this index is from -50.8 to -26.9 with an average to be around -40.503. The negative numbers is a result of how the index was constructed and scaled. 
+
+```{r echo=FALSE, error=TRUE, fig.height=3, fig.width=3, message=FALSE, warning=FALSE}
+# Plot for 'cons.price.idx'
+ggplot(data, aes(x = cons.price.idx)) +
+  geom_histogram(binwidth = 0.01, fill = 'purple', color = 'black') +
+  theme_minimal() +
+  labs(title = 'Distribution of CPI', x = 'Consumer Price Index', y = 'Frequency')
+
+# Plot for 'cons.conf.idx'
+ggplot(data, aes(x = cons.conf.idx)) +
+  geom_histogram(binwidth = 0.1, fill = 'purple', color = 'black') +
+  theme_minimal() +
+  labs(title = 'Distribution of CCI', x = 'Consumer Confidence Index', y = 'Frequency')
+```
+
+Passing now to the categorical variables of our dataset, on the below plot we can see the educational level of the customers were called. The dominate level was university degree with around 12.000 people belonging to this category almost one third of the whole population followed by high school level consisted of around 10.000 customers. It is worth mentioning that a minor percentage and only 18 people belong to the illiterate category.
+
+Continuing with the way that the clients were contacted, the next plot indicates that the majority of the people was call on their cellular phone, a number almost doubled with the ones that contacted on their telephone equals to almost 15.000 people.
+
+```{r echo=FALSE, error=TRUE, fig.height=3, fig.width=3, message=FALSE, warning=FALSE}
+#plot education
+ggplot(data, aes(x = education)) +
+  geom_bar(fill = 'purple', color = 'black') +
+  theme_minimal() +
+  labs(title = 'Distribution of Education', x = 'Customers Education', y = 'Count') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#plot for contact
+
+ggplot(data, aes(x = contact)) +
+  geom_bar(fill = 'purple', color = 'black') +
+  theme_minimal() +
+  labs(title = 'Distribution of Contact', x = 'Contact', y = 'Count')
+```
+
+In addition, on the plot below we can study the distribution across the days of the week the bank's customers were called. It is slightly obvious that the dominant day is Thursday, followed by Monday while Friday is the least common day among all.
+
+Lastly, taking a look on the last exploratory plot to our target variable,below, we notice that the majority of the clients do not open a deposit term to the bank, indicating at the same time the low success for the bank's telemarketing campaigns. Undoubtless, there is a class imbalance on our response variable and this is why we proceed to balance the class applying techniques from ROSE package creating synthetically data for the minority class.
+
+```{r echo=FALSE, error=TRUE, fig.height=3, fig.width=3, message=FALSE, warning=FALSE}
+#plot for 'day_of_week'
+ggplot(data, aes(x = day_of_week)) +
+  geom_bar(fill = 'purple', color = 'black') +
+  theme_minimal() +
+  labs(title = 'Distribution ', x = 'Day of Week', y = 'Count')
+
+#plot for 'y' (target variable)
+ggplot(data, aes(x = y)) +
+  geom_bar(fill = 'purple', color = 'black') +
+  theme_minimal() +
+  labs(title = 'Distribution', x = 'Term Deposit Subscription', y = 'Count')
+
+```
+
+
+
+Introducing our report to the main analysis, we first applied boosting and more precisely *Light Gradient Boosting*. Since we have a large dataset with 38.000 observations, we applied this method for fast training speed and higher accuracy. For classification purposes, we set objective parameter equals to "binary" and the metric equals to "binary_error" which is used for the model's evaluation. The number of leaves that was chosen is equals to 20 as we wanted a large number in order to increase the accuracy but not that large to avoid overfitting. The last parameter that we tuned is learning_rate which influences how the model learns during training. A small number of it requires more iterations but give us better results and a more general model. In our case the number was chosen is 0.05. Lastly, our model has been through one thousands iterations. 
+
+The next method we used is *CART* (Classification and Regression Trees) which is the most optimal one as we will see above. The tree is constructed by continuously  partitioning the data into subsets using rpart function, which makes it easier to interpret. For model validation, we used 10 fold cross validations with cp from 0.001 to 0.1. CP stands for model complexity, a small number creates larger trees while a large number leads to smaller trees. Based on the cross-validation results we found out the most optimal model which balance tree complexity and accuracy. Our model has been through 1000 iterations to extract the results.
+
+The last model that we used was *Random Forest* which did not perform as good as the rest above.
+On the training, the number of trees was set up to 500, as we increase the number of trees, the performance and the robustness of our model is being increased simultaneously at the cost of computational time. Since, we had around 38.000 observations we decided to choose this number of iterations in order to save time. The parameter "nodesize" was given the number 5 which equilibrate the accuracy and model's complexity. Lastly, the replace parameter turned into TRUE meaning that it it allows sampling of the training dataset with replacement to build each tree, bootstrapping.
+
+For models' evaluation we used **confusion matrix** method which allows us to understand the accuracy of the model, showing the number of correct and incorrect classifications compared to the actual values. On the below table, we can see the confusion matrix of the most optimal model, CART,which had the highest accuracy. Our model correctly forecast 5706 (True Negative) cases of negative class (0) and incorrectly predicted 1119 cases (False Negative) as the negative class when they were truly positive. On the other hand, the the CART model correctly predicted 763 cases (True Positive) of the positive class(1) but incorrectly forecast 61 cases(False Positive) as the positive class when they were negative in reality.
+
+
+
+
+
+```{r echo=FALSE, error=TRUE, fig.height=3, fig.width=3, message=FALSE, warning=FALSE, fig.pos='H'}
+#confusion matrix for Cart Model
+kable_styled
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+On the below table, we can inspect the model's comparison based on several metrics. In order to determine which model is the best we used **balanced accuracy** (average of specificity and sensitivity) as the performance metric  particularly because our dataset was imbalanced and this metric is more accurate for imbalanced datasets in comparison with the traditional accuracy that might be misleading. The balanced accuracy of CART model is slightly better  than LightBoosting having 0.881 in comparison with the later 0.878. In addition CART's sensitivity of 0.926 means it successfully identifies the 92.6% of the actual positive cases. Thus, CART's high sensitivity and balanced accuracy, together with its simplicity and interpretability, are the reasons to consider it as the best model.
+
+
+
+
+
+
+
+
+
+
+
+
+```{r echo=FALSE, error=TRUE, fig.height=2.5, fig.width=2.5, message=FALSE, warning=FALSE,fig.pos='H'}
+#Print the table with the model's metrics
+knitr::kable(as.data.frame(model_performance), caption = "Model Performance Metrics")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+Having decided the optimal model of our analysis, it is time now to see the most important features that influenced our target variable. On the below plot we can see the 10 more influential variables.
+The nr.employed, duration, and emp.var.rate are the most dominant variables in contrast to the rest.
+More specifically, the number of employers represents the total number of employers in the country and could be interpreted as the higher is this number the higher the consumer's confidence which potentially could lead to more  bank's deposits. Regarding the duration, the longer a call lasts, the higher the possibilities  of a term deposit, as the consumer might show high interest. As for, emp.var.rate it is a indicator that provide insights about job market dynamics and economic activity. Indicating a growing economy, can positively influence consumers to subscribe a bank deposit.
+
+Furthermore, the "pdays" represents the days that passed since the last contact with the customer indicating that a frequent contact again with them might lead to a bank deposit. Also, the poutcomesuccess reveal that if the previous marketing campaign was successful, the client maybe more open to give a bank deposit. In addition, as the cons.conf.idx and cons.price.idx was discussed on the beginning of our analysis, it worth mentioning that contacttelephone is a significant variable which influence client's decisions. As we saw on the beginning more people were contacted via cellular a thing that we should take it into account. Lastly, the significance of monthmar and monthoct feature might reveal a season factor or financial cycles that take place on that time.
+
+As a conclusion of the variable's importance, the social-economic indicators and the direct engagement such as duration and recent contact(pdays) play a main role on influencing customer's decisions to place a bank deposit.
+
+
+```{r echo=FALSE, error=TRUE, fig.height=3, fig.width=3.5, message=FALSE, warning=FALSE,fig.pos='H'}
+cart_var_impp
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+Lastly, the below plot represents a decision tree revealing the decision-making process to each node represented by a decision  based on the value of a specific variable every time. As we can see, there are some patterns of specific features that are used often to make the splits. More specifically, features such as duration, nr.employed, cons.conf.idx and cons.price.idx are the ones that influence the model's predictions. These 4 features, as we saw above on the variable's importance plot, belong to the most important ones which influence the target variable. Thus, the frequency of certain features indicate the importance of it on the final outcome
+
+
+
+```{r echo=FALSE, error=TRUE, fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+
+tree_cart<- prp(best_cart_model, type = 2, extra = 1)
+
+```
+
+
+
+## *Conclusion*
+
+In conclusion, answering the question that was formulated on the introduction, the bank telemarketing campaign was not that successful as the majority of the people, based on the confusion matrix, did not open a term deposit after their last contact with the bank. Nevertheless, we found  out which variables influence the most a customer to open a deposit which are nr.employed, duration, and emp.var.rate. , pdays, poutcomesuccess etc. Some of these variables are based on external factors that a bank cannot predict or intervene such as the social-economic indicators. However, for a future marketing campaign, marketing leaders could possibly build a strategy based on the rest of the most important features that they can intervene. 
+
+
+As about the limitations of our analysis, it has been more than 10 years since the conduction of this research and nowadays most marketing campaigns take place online as they influence the customers more. Thus, a campaign nowadays about bank deposit could be possible more successful. Furthermore, the data was gathered from a Portuguese's Bank, which is not representative for the rest Banks in Portugal. One of the most important limitation is that, the research was created  in a period where there was an ongoing financial global crisis and not a lot of people would open a bank deposit. Also, limitations relating to our analysis, the class of our target variable was imbalanced and we synthetically created new data that are not representative. If we were not worry about computational time, we could have applied RandomForest 1000 times instead of 500.
+
+Last but not least, as a future developments, we could propose to apply techniques like SHAP (SHapley Additive exPlanations) or LIME (Local Interpretable Model-agnostic Explanations) to dive even deeper on the interpretation of our models. In addition, we could have applied neural network  models to possible increase prediction accuracy. Lastly, conducting segmentation analysis will help us to understand the age groups and aim specific marketing strategies on specific age groups that are more possible to open a bank deposit.
+
+## *References*
+
+1. Moro,S., Rita,P., and Cortez,P.. (2012). Bank Marketing. UCI Machine Learning Repository. https://doi.org/10.24432/C5K306.
+
+2. Casu, B., Girardone, C., & Molyneux, P. (2006). Introduction to Banking. Prentice Hall
+
+3. Fernandez, A., Garcia, S., Herrera, F., & Chawla, N. V. (2018). SMOTE for Learning from Imbalanced Data: Progress and Challenges, Journal of Artificial Intelligence Research.
+
+
+
+
